@@ -1,0 +1,419 @@
+AWSTemplateFormatVersion: 2010-09-09
+Description: >-
+  This template create an ec2 instance of Jenkins server in one subnet
+Parameters:
+  JenkinsInstanceType:
+    Description: EC2 instance type for  Jenkins Server
+    Type: String
+    Default: t2.medium
+    AllowedValues:
+      - t1.micro
+      - t2.micro
+      - t2.small
+      - t2.medium
+      - m3.medium
+      - m3.large
+      - m3.xlarge
+      - m3.2xlarge
+      - c3.large
+      - c3.xlarge
+      - c3.2xlarge
+      - c3.4xlarge
+      - c3.8xlarge
+      - c4.large
+      - c4.xlarge
+      - c4.2xlarge
+      - c4.4xlarge
+      - c4.8xlarge
+      - r3.large
+      - r3.xlarge
+      - r3.2xlarge
+      - r3.4xlarge
+      - r3.8xlarge
+      - i2.xlarge
+      - i2.2xlarge
+      - i2.4xlarge
+      - i2.8xlarge
+      - hi1.4xlarge
+      - hs1.8xlarge
+      - cr1.8xlarge
+      - cc2.8xlarge
+    ConstraintDescription: must be a valid EC2 instance type.
+  KeyName:
+    Description: >-
+      The EC2 Key Pair to allow SSH access to CodeDeploy EC2 instances and
+      Jenkins Server
+    Type: 'AWS::EC2::KeyPair::KeyName'
+    ConstraintDescription: must be the name of an existing EC2 KeyPair.
+  VpcId:
+    Description: The VPC Id where the EC2 instances will be launched.
+    Type: 'AWS::EC2::VPC::Id'
+    ConstraintDescription: must be the name of an existing VPC.
+  YourIPRange:
+    Description: >-
+      CIDR block of the network from where you will connect to the Jenkins
+      server using HTTP and SSH
+    Type: String
+    MinLength: '9'
+    MaxLength: '18'
+    AllowedPattern: '(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})/(\d{1,2})'
+    ConstraintDescription: must be a valid IP CIDR range of the form x.x.x.x/x.
+  PublicSubnet:
+    Description: >-
+      The first public subnet where the Jenkins EC2 instance will be launched
+    Type: 'AWS::EC2::Subnet::Id'
+    ConstraintDescription: Must be a valid Public VPC Subnet.
+Mappings:
+  AWSRegionArch2AMI:
+    ap-northeast-1:
+      AMI: ami-08847abae18baa040
+    ap-northeast-2:
+      AMI: ami-012566705322e9a8e
+    ap-south-1:
+      AMI: ami-00b6a8a2bd28daf19
+    ap-southeast-1:
+      AMI: ami-01da99628f381e50a
+    ap-southeast-2:
+      AMI: ami-00e17d1165b9dd3ec
+    eu-central-1:
+      AMI: ami-076431be05aaf8080
+    eu-west-1:
+      AMI: ami-0bdb1d6c15a40392c
+    eu-west-2:
+      AMI: ami-e1768386
+    eu-west-3:
+      AMI: ami-06340c8c12baa6a09
+    sa-east-1:
+      AMI: ami-0ad7b0031d41ed4b9
+    us-east-1:
+      AMI: ami-04681a1dbd79675a5
+    us-east-2:
+      AMI: ami-0cf31d971a3ca20d6
+    us-west-1:
+      AMI: ami-0782017a917e973e7
+    us-west-2:
+      AMI: ami-6cd6f714
+Resources:
+  JenkinsServer:
+    Type: 'AWS::EC2::Instance'
+    Metadata:
+      Comment: 'Install Jenkins, nginx and the Jenkins CodeDeploy plugin'
+      'AWS::CloudFormation::Init':
+        configSets:
+          install_all:
+            - install_base
+            - install_nginx
+        install_base:
+          packages:
+            yum:
+              git: []
+        install_nginx:
+          packages:
+            yum:
+              nginx: []
+          files:
+            /etc/nginx/nginx.conf:
+              content: !Join 
+                - ''
+                - - |
+                    user  nginx;
+                  - |+
+                    worker_processes  1;
+
+                  - |
+                    error_log  /var/log/nginx/error.log;
+                  - |+
+                    pid        /var/run/nginx.pid;
+
+                  - |
+                    events {
+                  - |2
+                        worker_connections  1024;
+                  - |+
+                    }
+
+                  - |
+                    http {
+                  - |2
+                        include       /etc/nginx/mime.types;
+                  - |2
+                        default_type  application/octet-stream;
+                  - |2
+                        log_format  main  '$remote_addr - $remote_user [$time_local] "$request" '
+                  - |2
+                                          '$status $body_bytes_sent "$http_referer" '
+                  - |2+
+                                          '"$http_user_agent" "$http_x_forwarded_for"';
+
+                  - |2
+                        access_log  /var/log/nginx/access.log  main;
+                  - |2
+                        sendfile        on;
+                  - |2
+                        keepalive_timeout  65;
+                  - |2
+                        include /etc/nginx/conf.d/*.conf;
+                  - |2
+                        index   index.html index.htm;
+                  - |2
+                        server {
+                  - |2
+                            listen       80;
+                  - |2
+                            server_name  _;
+                  - |2
+                            location / {
+                  - |2
+                              proxy_pass              http://127.0.0.1:8080;
+                  - |2
+                              proxy_set_header        Host $host;
+                  - |2
+                              proxy_set_header        X-Real-IP $remote_addr;
+                  - |2
+                              proxy_set_header        X-Forwarded-For $proxy_add_x_forwarded_for;
+                  - |2
+                              proxy_connect_timeout   150;
+                  - |2
+                              proxy_send_timeout      100;
+                  - |2
+                              proxy_read_timeout      100;
+                  - |2
+                              proxy_buffers           4 32k;
+                  - |2
+                              client_max_body_size    8m;
+                  - |2
+                              client_body_buffer_size 128k;
+                  - |2
+                            }
+                  - |2
+                            location /password.txt {
+                  - |2
+                              alias              /web/initalpass.html;
+                  - |2
+                            }
+                  - |2
+                       }
+                  - |
+                    }
+          mode: '000444'
+          owner: root
+          group: root
+      services:
+        sysvinit:
+          nginx:
+            enabled: 'true'
+            ensureRunning: 'true'
+            files:
+              - /etc/nginx/nginx.conf
+    Properties:
+      KeyName: !Ref KeyName
+      ImageId: !FindInMap 
+        - AWSRegionArch2AMI
+        - !Ref 'AWS::Region'
+        - AMI
+      NetworkInterfaces:
+        - AssociatePublicIpAddress: 'true'
+          DeviceIndex: '0'
+          GroupSet:
+            - !Ref JenkinsSecurityGroup
+          SubnetId: !Ref PublicSubnet
+      InstanceType: !Ref JenkinsInstanceType
+      IamInstanceProfile: !Ref JenkinsInstanceProfile
+      UserData: !Base64 
+        'Fn::Join':
+          - ''
+          - - |
+              #!/bin/bash -xe
+            - |
+              amazon-linux-extras install epel
+            - |
+              sudo yum install -y aws-cfn-bootstrap
+            - |
+              sudo mkdir /web
+            - '/opt/aws/bin/cfn-init -v '
+            - ' --stack '
+            - !Ref 'AWS::StackName'
+            - ' --resource JenkinsServer '
+            - ' --configsets install_all '
+            - ' --region '
+            - !Ref 'AWS::Region'
+            - |+
+
+            - |
+              # Install Jenkins and Java8
+            - |
+              sudo yum install wget -y
+            - >
+              sudo wget -O /etc/yum.repos.d/jenkins.repo
+              https://pkg.jenkins.io/redhat-stable/jenkins.repo
+            - >
+              sudo rpm --import
+              https://pkg.jenkins.io/redhat-stable/jenkins.io.key
+            - |
+              sudo yum install java-1.8.0-openjdk -y
+            - |
+              sudo yum update -y
+            - |
+              sudo yum install jenkins -y
+            - |
+              sudo service jenkins start
+            - |
+              sudo chkconfig jenkins on
+            - |
+              # Update the AWS CLI to the latest version
+            - |
+              sudo yum update -y aws-cli
+            - |
+              # Wait 30 seconds to allow Jenkins to startup
+            - |
+              echo "Waiting 30 seconds for Jenkins to start....."
+            - |
+              sleep 30
+            - |
+              ## Nginx setup
+            - |
+              service nginx restart
+            - |
+              # Restart Jenkins Service
+            - |
+              /etc/init.d/jenkins restart
+            - |
+              #Restart NGINX service
+            - |
+              sudo service nginx restart
+            - |
+              sleep 90
+            - >
+              cp /var/lib/jenkins/secrets/initialAdminPassword
+              /web/initalpass.html 
+            - |
+              chown nginx:nginx /web/initalpass.html 
+            - |
+              # Configure AWS CLI and GIT for jenkins user
+            - >
+              sudo su - jenkins --shell /bin/bash -c "aws configure set region
+              eu-central-1" 
+            - >
+              sudo su - jenkins --shell /bin/bash -c "aws configure set output
+              json" 
+            - >
+              #until [ -f
+              /var/lib/jenkins/jenkins.install.InstallUtil.lastExecVersion ];
+              do   sleep 5; service jenkins restart; done
+            - >
+              while [ ! -f
+              /var/lib/jenkins/jenkins.install.InstallUtil.lastExecVersion ]; do
+              echo waiting for jenkins to finish setup; sleep 10; done; service
+              jenkins restart
+            - |+
+
+      Tags:
+        - Key: Name
+          Value: Jenkins Server
+  JenkinsSecurityGroup:
+    Type: 'AWS::EC2::SecurityGroup'
+    Properties:
+      GroupDescription: Enable SSH and HTTP access from specific CIDR block
+      VpcId: !Ref VpcId
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: '22'
+          ToPort: '22'
+          CidrIp: !Ref YourIPRange
+        - IpProtocol: tcp
+          FromPort: '80'
+          ToPort: '80'
+          CidrIp: !Ref YourIPRange
+        - IpProtocol: tcp
+          FromPort: '8080'
+          ToPort: '8080'
+          CidrIp: !Ref YourIPRange
+      SecurityGroupEgress:
+        - IpProtocol: tcp
+          FromPort: '0'
+          ToPort: '65535'
+          CidrIp: 0.0.0.0/0
+  CodeDeployBucket:
+    Type: 'AWS::S3::Bucket'
+    Properties:
+      VersioningConfiguration:
+        Status: Enabled
+  JenkinsBucketPolicy:
+    Type: 'AWS::S3::BucketPolicy'
+    Properties:
+      Bucket: !Ref CodeDeployBucket
+      PolicyDocument:
+        Statement:
+          - Sid: IPAllow
+            Effect: Allow
+            Action:
+              - 's3:Get*'
+              - 's3:List*'
+            Resource: !Join 
+              - ''
+              - - 'arn:aws:s3:::'
+                - !Ref CodeDeployBucket
+                - /*
+            Principal: '*'
+            Condition:
+              IpAddress:
+                'aws:SourceIp':
+                  - !Join 
+                    - ''
+                    - - !GetAtt 
+                        - JenkinsServer
+                        - PublicIp
+                      - /24
+  JenkinsRole:
+    Type: 'AWS::IAM::Role'
+    Properties:
+      Path: /
+      AssumeRolePolicyDocument:
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service:
+                - ec2.amazonaws.com
+            Action:
+              - 'sts:AssumeRole'
+  JenkinsInstanceProfile:
+    Type: 'AWS::IAM::InstanceProfile'
+    Properties:
+      Path: /
+      Roles:
+        - !Ref JenkinsRole
+  JenkinsPolicy:
+    Type: 'AWS::IAM::Policy'
+    Properties:
+      PolicyName: JenkinsPolicy
+      PolicyDocument:
+        Version: 2012-10-17
+        Statement:
+          - Effect: Allow
+            Action:
+              - 's3:GetObject'
+              - 's3:GetObjectVersion'
+              - 's3:PutObject'
+              - 's3:DeleteObject'
+            Resource: '*'
+          - Effect: Allow
+            Action:
+              - 'codedeploy:ListApplications'
+              - 'codedeploy:ListDeploymentGroups'
+              - 'codedeploy:RegisterApplicationRevision'
+              - 'codedeploy:CreateDeployment'
+              - 'codedeploy:GetDeploymentConfig'
+              - 'codedeploy:GetApplicationRevision'
+              - 'codedeploy:GetDeployment'
+            Resource: '*'
+      Roles:
+        - !Ref JenkinsRole
+Outputs:
+  JenkinsServerDNSName:
+    Description: DNS Name of Jenkins Server
+    Value: !GetAtt 
+      - JenkinsServer
+      - PublicDnsName
+  S3BucketName:
+    Description: S3 Bucket Name
+    Value: !Ref CodeDeployBucket
